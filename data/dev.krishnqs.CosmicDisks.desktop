@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=COSMIC Disks
+Comment=Manage disks and partitions
+Exec=cosmic-disks
+Icon=dev.krishnqs.CosmicDisks
+StartupWMClass=dev.krishnqs.CosmicDisks
+Type=Application
+Categories=System;
+Keywords=disk;partition;format;mount;storage;drive;

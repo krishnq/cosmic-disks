@@ -1,0 +1,19 @@
+FROM rust:slim-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libxkbcommon-dev \
+    libdbus-1-dev \
+    libwayland-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN cargo install cargo-deb
+
+WORKDIR /build
+COPY . .
+
+RUN cargo build --release
+RUN cargo deb --no-build
+
+FROM scratch
+COPY --from=builder /build/target/debian/*.deb /

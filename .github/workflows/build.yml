@@ -1,0 +1,61 @@
+name: Build and Package
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  deb:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config cmake \
+            libdbus-1-dev \
+            libwayland-dev wayland-protocols \
+            libxkbcommon-dev \
+            libvulkan-dev libgbm-dev libegl-dev \
+            libgles2-mesa-dev libgl-dev \
+            libfontconfig-dev libfreetype-dev \
+            libinput-dev libudev-dev libseat-dev \
+            libexpat1-dev libssl-dev \
+            libatspi2.0-dev
+
+      - name: Install cargo-deb
+        run: which cargo-deb || cargo install cargo-deb --locked
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Package .deb
+        run: cargo deb --no-build
+
+      - name: Upload .deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: cosmic-disks-deb
+          path: target/debian/cosmic-disks_*.deb
+          retention-days: 30

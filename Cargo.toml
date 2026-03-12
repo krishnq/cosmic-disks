@@ -1,0 +1,75 @@
+[package]
+name = "cosmic-disks"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0"
+description = "A COSMIC-native disk and partition manager"
+repository = "https://github.com/krishnqs/cosmic-disks"
+
+[lib]
+name = "cosmic_disks"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cosmic-disks"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+i18n-embed = { version = "0.16", features = [
+    "fluent-system",
+    "desktop-requester",
+] }
+i18n-embed-fl = "0.10"
+open = "5"
+rust-embed = "8"
+tokio = { version = "1", features = ["full"] }
+udisks2 = "0.3"
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "file_chooser"] }
+url = "2"
+bytesize = "2"
+log = "0.4"
+env_logger = "0.11"
+
+[package.metadata.deb]
+name = "cosmic-disks"
+maintainer = "Sai Krishna Kodali <saikrishna@kodali.co>"
+copyright = "2024, Sai Krishna Kodali"
+extended-description = """\
+A COSMIC-native disk and partition manager. Queries disk and partition \
+information from the system via D-Bus (udisks2) and displays it in a \
+native COSMIC desktop GUI."""
+# Runtime library deps specified manually because the build happens inside
+# a Nix dev shell — dpkg-shlibdeps can't resolve Nix store paths.
+depends = "udisks2, polkitd | policykit-1, libxkbcommon0 (>= 1.0), libdbus-1-3, libwayland-client0"
+recommends = "xdg-desktop-portal"
+section = "admin"
+priority = "optional"
+maintainer-scripts = "debian/"
+assets = [
+    ["target/release/cosmic-disks", "usr/bin/cosmic-disks", "755"],
+    ["data/dev.krishnqs.CosmicDisks.desktop", "usr/share/applications/", "644"],
+    ["resources/icons/hicolor/scalable/apps/icon.svg", "usr/share/icons/hicolor/scalable/apps/dev.krishnqs.CosmicDisks.svg", "644"],
+    ["data/polkit/dev.krishnqs.CosmicDisks.rules", "usr/share/polkit-1/rules.d/", "644"],
+]
+
+[dependencies.cosmic-config]
+git = "https://github.com/pop-os/libcosmic.git"
+package = "cosmic-config"
+
+[dependencies.libcosmic]
+git = "https://github.com/pop-os/libcosmic.git"
+features = [
+    "a11y",
+    "about",
+    "dbus-config",
+    "single-instance",
+    "tokio",
+    "winit",
+    "wayland",
+    "wgpu",
+]

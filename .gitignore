@@ -1,0 +1,6 @@
+/target
+.vscode/
+.claude/
+context.md
+CLAUDE.md
+dist/

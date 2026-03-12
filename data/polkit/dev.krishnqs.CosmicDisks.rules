@@ -1,0 +1,17 @@
+/* polkit rules for COSMIC Disks
+ *
+ * Allows active local users to write /etc/fstab entries via udisks2
+ * (org.freedesktop.UDisks2.Block.AddConfigurationItem) when mounting a
+ * filesystem at a user-specified path.
+ *
+ * AUTH_SELF_KEEP for active local sessions: prompts the user for their
+ * password once per session before allowing fstab writes via udisks2
+ * (org.freedesktop.UDisks2.Block.AddConfigurationItem).
+ */
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.udisks2.modify-system-configuration" &&
+        subject.active === true &&
+        subject.local === true) {
+        return polkit.Result.AUTH_SELF_KEEP;
+    }
+});

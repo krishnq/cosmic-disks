@@ -50,6 +50,7 @@ op-formatting = Formatting { $device }…
 op-creating-partition = Creating partition…
 error-invalid-size = Invalid size "{ $input }". Use a value like "10 GB" or "500 MB".
 mount-add-to-fstab = Add to /etc/fstab
+mount-already-in-fstab = Already in /etc/fstab
 portal-pick-folder-title = Select mount point
 mount-flag-ro = Read-only
 mount-flag-noexec = No execute

@@ -30,6 +30,7 @@ pub struct AppModel {
     pub active_dialog: ActiveDialog,
     pub config: Config,
     pub config_handler: Option<cosmic::cosmic_config::Config>,
+    pub operation_error: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -97,6 +98,7 @@ impl cosmic::Application for AppModel {
             active_dialog: ActiveDialog::None,
             config,
             config_handler,
+            operation_error: None,
         };
 
         let command = cosmic::task::future(async {
@@ -190,9 +192,13 @@ impl cosmic::Application for AppModel {
                 let adv_toggle = widget::button::standard(adv_label)
                     .on_press(Message::ToggleMountDialogAdvanced);
 
-                let fstab_checkbox = widget::checkbox(d.add_to_fstab)
-                    .label(fl!("mount-add-to-fstab"))
-                    .on_toggle(|_| Message::ToggleFstabCheckbox);
+                let fstab_checkbox = if d.already_in_fstab {
+                    widget::checkbox(true).label(fl!("mount-already-in-fstab"))
+                } else {
+                    widget::checkbox(d.add_to_fstab)
+                        .label(fl!("mount-add-to-fstab"))
+                        .on_toggle(|_| Message::ToggleFstabCheckbox)
+                };
 
                 let mut controls = widget::column()
                     .push(path_row)
@@ -313,12 +319,28 @@ impl AppModel {
             return self.view_scanning();
         };
         let spacing = cosmic::theme::spacing();
-        let mut list = widget::column().spacing(spacing.space_xs);
+        let mut outer = widget::column();
 
+        if let Some(ref err) = self.operation_error {
+            outer = outer.push(
+                widget::row()
+                    .push(widget::text::body(err.clone()).width(Length::Fill))
+                    .push(
+                        widget::button::standard(fl!("dismiss"))
+                            .on_press(Message::DismissError),
+                    )
+                    .spacing(spacing.space_s)
+                    .align_y(Alignment::Center)
+                    .apply(widget::container)
+                    .padding([spacing.space_s, spacing.space_m])
+                    .class(cosmic::theme::Container::Card),
+            );
+        }
+
+        let mut list = widget::column().spacing(spacing.space_xs);
         for drive in drives {
             list = list.push(disk_card(drive, &self.selection_state));
         }
-
         list = list.push(
             widget::button::standard(fl!("refresh"))
                 .on_press(Message::RefreshDisks)
@@ -327,7 +349,12 @@ impl AppModel {
                 .align_x(Horizontal::Center),
         );
 
-        widget::scrollable(list.padding(spacing.space_m))
+        outer
+            .push(
+                widget::scrollable(list.padding(spacing.space_m))
+                    .width(Length::Fill)
+                    .height(Length::Fill),
+            )
             .width(Length::Fill)
             .height(Length::Fill)
             .into()

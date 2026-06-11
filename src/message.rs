@@ -49,6 +49,17 @@ pub enum SelectionState {
     Unallocated(UnallocatedContext),
 }
 
+impl SelectionState {
+    /// Returns `true` when the selected partition already has an `/etc/fstab` entry loaded.
+    pub fn has_fstab_entry(&self) -> bool {
+        if let SelectionState::Partition(ctx) = self {
+            ctx.fstab_entry.is_some()
+        } else {
+            false
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MountFlag {
     ReadOnly,
@@ -168,6 +179,23 @@ pub struct MountLocationDialog {
     /// Whether to write a persistent `/etc/fstab` entry before mounting.
     /// Only relevant when `path` is non-empty; ignored for managed mounts.
     pub add_to_fstab: bool,
+    /// Snapshot of whether the partition had an fstab entry at the moment this
+    /// dialog was opened.  Stored here rather than re-reading `SelectionState`
+    /// in the view so that the disabled state is stable for the dialog's
+    /// lifetime even if an async `FstabLoaded` arrives mid-session.
+    /// When true the checkbox is shown checked-and-disabled and the fstab write
+    /// is suppressed at confirm time regardless of `add_to_fstab`.
+    pub already_in_fstab: bool,
+}
+
+impl MountLocationDialog {
+    /// The effective value to pass to `mount_at_path`.
+    /// Suppresses the write when the partition is already in fstab — guards
+    /// against a race where `already_in_fstab` was set before the async lookup
+    /// completed, or against a future UI path that bypasses the disabled checkbox.
+    pub fn effective_add_to_fstab(&self) -> bool {
+        self.add_to_fstab && !self.already_in_fstab
+    }
 }
 
 /// State for the inline format panel that expands inside the partition detail card.
@@ -253,4 +281,107 @@ pub enum Message {
     DismissError,
     /// Config changed externally (e.g. another process wrote to cosmic-config).
     ConfigUpdate(crate::config::Config),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::actions::disks::{BlockDevice, FstabEntry, PartitionState};
+
+    fn dummy_block_device() -> BlockDevice {
+        BlockDevice {
+            device: String::new(),
+            uuid: String::new(),
+            label: String::new(),
+            fs_type: String::new(),
+            size: 0,
+            offset: 0,
+            mount_points: vec![],
+            drive_id: String::new(),
+            state: PartitionState::Unmounted,
+            part_uuid: String::new(),
+            part_label: String::new(),
+        }
+    }
+
+    fn partition_ctx(fstab_entry: Option<FstabEntry>) -> PartitionContext {
+        PartitionContext {
+            partition: dummy_block_device(),
+            fstab_entry,
+            format_panel: None,
+            operation_in_progress: None,
+            operation_error: None,
+        }
+    }
+
+    fn dummy_fstab() -> FstabEntry {
+        FstabEntry {
+            spec: "UUID=abc-123".to_string(),
+            mount_point: "/mnt/data".to_string(),
+            options: "defaults".to_string(),
+        }
+    }
+
+    #[test]
+    fn no_selection_returns_false() {
+        assert!(!SelectionState::None.has_fstab_entry());
+    }
+
+    #[test]
+    fn partition_without_fstab_returns_false() {
+        let state = SelectionState::Partition(partition_ctx(None));
+        assert!(!state.has_fstab_entry());
+    }
+
+    #[test]
+    fn partition_with_fstab_returns_true() {
+        let state = SelectionState::Partition(partition_ctx(Some(dummy_fstab())));
+        assert!(state.has_fstab_entry());
+    }
+
+    #[test]
+    fn unallocated_returns_false() {
+        let state = SelectionState::Unallocated(UnallocatedContext {
+            drive_id: "test-drive".to_string(),
+            create_panel: None,
+            operation_in_progress: None,
+            operation_error: None,
+        });
+        assert!(!state.has_fstab_entry());
+    }
+
+    fn mount_dialog(add_to_fstab: bool, already_in_fstab: bool) -> MountLocationDialog {
+        MountLocationDialog {
+            device: String::new(),
+            path: String::new(),
+            show_advanced: false,
+            selected_flags: std::collections::HashSet::new(),
+            add_to_fstab,
+            already_in_fstab,
+        }
+    }
+
+    #[test]
+    fn effective_fstab_normal_write() {
+        // user checked the box, not already in fstab → write
+        assert!(mount_dialog(true, false).effective_add_to_fstab());
+    }
+
+    #[test]
+    fn effective_fstab_suppressed_when_already_present() {
+        // already in fstab → no write even if checkbox was somehow set true
+        assert!(!mount_dialog(true, true).effective_add_to_fstab());
+    }
+
+    #[test]
+    fn effective_fstab_unchecked_no_write() {
+        // user left box unchecked → no write
+        assert!(!mount_dialog(false, false).effective_add_to_fstab());
+    }
+
+    #[test]
+    fn effective_fstab_unchecked_already_present() {
+        // both false → no write
+        assert!(!mount_dialog(false, true).effective_add_to_fstab());
+    }
 }

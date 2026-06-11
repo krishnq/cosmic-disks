@@ -67,12 +67,14 @@ impl AppModel {
             }
 
             Message::OpenMountDialog { device, prefill_path } => {
+                let already_in_fstab = self.selection_state.has_fstab_entry();
                 self.active_dialog = ActiveDialog::Mount(MountLocationDialog {
                     device,
                     path: prefill_path.unwrap_or_default(),
                     show_advanced: false,
                     selected_flags: HashSet::new(),
                     add_to_fstab: false,
+                    already_in_fstab,
                 });
                 if let SelectionState::Partition(ref mut ctx) = self.selection_state {
                     ctx.operation_error = None;
@@ -101,7 +103,9 @@ impl AppModel {
 
             Message::ToggleFstabCheckbox => {
                 if let ActiveDialog::Mount(ref mut d) = self.active_dialog {
-                    d.add_to_fstab = !d.add_to_fstab;
+                    if !d.already_in_fstab {
+                        d.add_to_fstab = !d.add_to_fstab;
+                    }
                 }
             }
 
@@ -126,7 +130,7 @@ impl AppModel {
                 {
                     let device = d.device.clone();
                     let mount_path = d.path.trim().to_string();
-                    let add_to_fstab = d.add_to_fstab;
+                    let add_to_fstab = d.effective_add_to_fstab();
                     let options = MountFlag::ALL
                         .iter()
                         .filter(|f| d.selected_flags.contains(f))
@@ -376,23 +380,33 @@ impl AppModel {
                 }
             }
 
-            Message::OperationFailed(e) => match &mut self.selection_state {
-                SelectionState::Partition(ctx) => {
-                    ctx.operation_in_progress = None;
-                    ctx.operation_error = Some(e);
+            Message::OperationFailed(e) => {
+                self.operation_error = Some(e.clone());
+                match &mut self.selection_state {
+                    SelectionState::Partition(ctx) => {
+                        ctx.operation_in_progress = None;
+                        ctx.operation_error = Some(e);
+                    }
+                    SelectionState::Unallocated(ctx) => {
+                        ctx.operation_in_progress = None;
+                        ctx.operation_error = Some(e);
+                    }
+                    SelectionState::None => {}
                 }
-                SelectionState::Unallocated(ctx) => {
-                    ctx.operation_in_progress = None;
-                    ctx.operation_error = Some(e);
-                }
-                SelectionState::None => {}
-            },
+                return cosmic::task::future(async {
+                    tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+                    cosmic::Action::App(Message::DismissError)
+                });
+            }
 
-            Message::DismissError => match &mut self.selection_state {
-                SelectionState::Partition(ctx) => ctx.operation_error = None,
-                SelectionState::Unallocated(ctx) => ctx.operation_error = None,
-                SelectionState::None => {}
-            },
+            Message::DismissError => {
+                self.operation_error = None;
+                match &mut self.selection_state {
+                    SelectionState::Partition(ctx) => ctx.operation_error = None,
+                    SelectionState::Unallocated(ctx) => ctx.operation_error = None,
+                    SelectionState::None => {}
+                }
+            }
 
             Message::ConfigUpdate(config) => {
                 self.config = config;

@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0
+#![forbid(unsafe_code)]
 
 pub mod actions;
 pub mod app;
-pub mod util;
 pub mod cli;
 pub mod config;
 pub mod handlers;
 pub mod i18n;
 pub mod message;
 pub mod ui;
+pub mod util;
 
+/// # Panics
+/// Panics if the Tokio runtime cannot be initialised (e.g. resource exhaustion).
 pub fn run() -> cosmic::iced::Result {
     env_logger::init();
 

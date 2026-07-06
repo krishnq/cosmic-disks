@@ -7,6 +7,16 @@ use bytesize::ByteSize;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum DiskError {
+    #[error(transparent)]
+    Dbus(#[from] zbus::Error),
+    #[error(transparent)]
+    DbusFdo(#[from] zbus::fdo::Error),
+    #[error(transparent)]
+    Udisks(#[from] udisks2::Error),
+}
+
 const DRIVE_IFACE: &str = "org.freedesktop.UDisks2.Drive";
 const BLOCK_IFACE: &str = "org.freedesktop.UDisks2.Block";
 const FS_IFACE: &str = "org.freedesktop.UDisks2.Filesystem";
@@ -68,7 +78,7 @@ pub struct Drive {
 }
 
 impl Drive {
-    pub fn display_name(&self) -> String {
+    pub(crate) fn display_name(&self) -> String {
         let name = if !self.vendor.is_empty() && !self.model.is_empty() {
             format!("{} {}", self.vendor.trim(), self.model.trim())
         } else if !self.model.is_empty() {
@@ -81,15 +91,7 @@ impl Drive {
 }
 
 impl BlockDevice {
-    pub fn display_name(&self) -> String {
-        if !self.label.is_empty() {
-            format!("{} ({})", self.label, self.device)
-        } else {
-            self.device.clone()
-        }
-    }
-
-    pub fn display_size(&self) -> String {
+    pub(crate) fn display_size(&self) -> String {
         ByteSize::b(self.size).to_string()
     }
 }
@@ -101,7 +103,7 @@ impl BlockDevice {
 /// Read `/etc/fstab` and return the first entry matching this device by UUID,
 /// LABEL, PARTUUID, PARTLABEL, or device path.  Returns `None` if no match or
 /// fstab is unreadable.
-pub async fn lookup_fstab(
+pub(crate) async fn lookup_fstab(
     uuid: &str,
     label: &str,
     device: &str,
@@ -148,6 +150,120 @@ fn parse_fstab(
     None
 }
 
+// ---------------------------------------------------------------------------
+// Drive scan
+// ---------------------------------------------------------------------------
+
+pub(crate) async fn scan_drives() -> Result<Vec<Drive>, DiskError> {
+    let client = udisks2::Client::new().await?;
+    let objects = client.object_manager().get_managed_objects().await?;
+
+    let mut drives: Vec<Drive> = Vec::new();
+    let mut drive_map: HashMap<String, usize> = HashMap::new();
+
+    for (path, interfaces) in &objects {
+        let Some(props) = interfaces.get(DRIVE_IFACE) else {
+            continue;
+        };
+
+        let id = path.to_string();
+        let idx = drives.len();
+        drives.push(Drive {
+            id: id.clone(),
+            model: prop_str(props, "Model"),
+            vendor: prop_str(props, "Vendor"),
+            size: prop_u64(props, "Size"),
+            removable: prop_bool(props, "Removable"),
+            partitions: Vec::new(),
+            block_device: String::new(),
+        });
+        drive_map.insert(id, idx);
+    }
+
+    for (path, interfaces) in &objects {
+        let Some(block_props) = interfaces.get(BLOCK_IFACE) else {
+            continue;
+        };
+
+        let device = block_props
+            .get("Device")
+            .map(ay_to_string)
+            .unwrap_or_default();
+
+        if device.is_empty() || device.starts_with("/dev/loop") {
+            continue;
+        }
+
+        let has_partition = interfaces.get(PARTITION_IFACE).is_some();
+        let has_filesystem = interfaces.get(FS_IFACE).is_some();
+        let drive_id = prop_path(block_props, "Drive");
+
+        // Capture the whole-disk block device's object path so the UI can call
+        // PartitionTable.CreatePartitionAndFormat on it.
+        if interfaces.get(PARTITION_TABLE_IFACE).is_some() && !has_partition {
+            if let Some(&idx) = drive_map.get(&drive_id) {
+                drives[idx].block_device = path.to_string();
+            }
+        }
+
+        // Skip the whole-disk block device (e.g. /dev/nvme0n1 alongside its partitions).
+        // Keep it only if it has a filesystem directly on it (whole-disk formatted device).
+        if !has_partition && !has_filesystem {
+            continue;
+        }
+        let mount_points = interfaces
+            .get(FS_IFACE)
+            .map(prop_mount_points)
+            .unwrap_or_default();
+        let offset = interfaces
+            .get(PARTITION_IFACE)
+            .map(|p| prop_u64(p, "Offset"))
+            .unwrap_or(0);
+        let part_uuid = interfaces
+            .get(PARTITION_IFACE)
+            .map(|p| prop_str(p, "UUID"))
+            .unwrap_or_default();
+        let part_label = interfaces
+            .get(PARTITION_IFACE)
+            .map(|p| prop_str(p, "Name"))
+            .unwrap_or_default();
+
+        let fs_type = prop_str(block_props, "IdType");
+        let state = if !mount_points.is_empty() {
+            PartitionState::Mounted
+        } else if has_filesystem || !fs_type.is_empty() {
+            PartitionState::Unmounted
+        } else {
+            PartitionState::Unformatted
+        };
+
+        let block = BlockDevice {
+            device,
+            uuid: prop_str(block_props, "IdUUID"),
+            label: prop_str(block_props, "IdLabel"),
+            fs_type,
+            size: prop_u64(block_props, "Size"),
+            offset,
+            mount_points,
+            drive_id: drive_id.clone(),
+            state,
+            part_uuid,
+            part_label,
+        };
+
+        if let Some(&idx) = drive_map.get(&drive_id) {
+            drives[idx].partitions.push(block);
+        }
+    }
+
+    for drive in &mut drives {
+        drive.partitions.sort_by_key(|p| p.offset);
+    }
+    drives.sort_by(|a, b| a.model.cmp(&b.model));
+
+    Ok(drives)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,14 +303,16 @@ mod tests {
 
     #[test]
     fn parse_fstab_skips_comments_and_short_lines() {
-        let content = "# this is a comment\nUUID=abc-123\n\nUUID=abc-123  /mnt/data  ext4  defaults  0  2\n";
+        let content =
+            "# this is a comment\nUUID=abc-123\n\nUUID=abc-123  /mnt/data  ext4  defaults  0  2\n";
         let result = parse_fstab(content, "abc-123", "", "", "", "");
         assert!(result.is_some());
     }
 
     #[test]
     fn parse_fstab_matches_partuuid() {
-        let content = "PARTUUID=11111111-2222-3333-4444-555555555555  /mnt/data  ext4  defaults  0  2\n";
+        let content =
+            "PARTUUID=11111111-2222-3333-4444-555555555555  /mnt/data  ext4  defaults  0  2\n";
         let result = parse_fstab(
             content,
             "",
@@ -214,107 +332,4 @@ mod tests {
         let entry = result.expect("should match PARTLABEL");
         assert_eq!(entry.mount_point, "/mnt/data");
     }
-}
-
-// ---------------------------------------------------------------------------
-// Drive scan
-// ---------------------------------------------------------------------------
-
-pub async fn scan_drives() -> Result<Vec<Drive>, Box<dyn std::error::Error + Send + Sync>> {
-    let client = udisks2::Client::new().await?;
-    let objects = client.object_manager().get_managed_objects().await?;
-
-    let mut drives: Vec<Drive> = Vec::new();
-    let mut drive_map: HashMap<String, usize> = HashMap::new();
-
-    for (path, interfaces) in &objects {
-        let Some(props) = interfaces.get(DRIVE_IFACE) else { continue };
-
-        let id = path.to_string();
-        let idx = drives.len();
-        drives.push(Drive {
-            id: id.clone(),
-            model: prop_str(props, "Model"),
-            vendor: prop_str(props, "Vendor"),
-            size: prop_u64(props, "Size"),
-            removable: prop_bool(props, "Removable"),
-            partitions: Vec::new(),
-            block_device: String::new(),
-        });
-        drive_map.insert(id, idx);
-    }
-
-    for (path, interfaces) in &objects {
-        let Some(block_props) = interfaces.get(BLOCK_IFACE) else { continue };
-
-        let device = block_props.get("Device").map(ay_to_string).unwrap_or_default();
-
-        if device.is_empty() || device.starts_with("/dev/loop") {
-            continue;
-        }
-
-        let has_partition = interfaces.get(PARTITION_IFACE).is_some();
-        let has_filesystem = interfaces.get(FS_IFACE).is_some();
-        let drive_id = prop_path(block_props, "Drive");
-
-        // Capture the whole-disk block device's object path so the UI can call
-        // PartitionTable.CreatePartitionAndFormat on it.
-        if interfaces.get(PARTITION_TABLE_IFACE).is_some() && !has_partition {
-            if let Some(&idx) = drive_map.get(&drive_id) {
-                drives[idx].block_device = path.to_string();
-            }
-        }
-
-        // Skip the whole-disk block device (e.g. /dev/nvme0n1 alongside its partitions).
-        // Keep it only if it has a filesystem directly on it (whole-disk formatted device).
-        if !has_partition && !has_filesystem {
-            continue;
-        }
-        let mount_points = interfaces.get(FS_IFACE)
-            .map(prop_mount_points)
-            .unwrap_or_default();
-        let offset = interfaces.get(PARTITION_IFACE)
-            .map(|p| prop_u64(p, "Offset"))
-            .unwrap_or(0);
-        let part_uuid = interfaces.get(PARTITION_IFACE)
-            .map(|p| prop_str(p, "UUID"))
-            .unwrap_or_default();
-        let part_label = interfaces.get(PARTITION_IFACE)
-            .map(|p| prop_str(p, "Name"))
-            .unwrap_or_default();
-
-        let fs_type = prop_str(block_props, "IdType");
-        let state = if !mount_points.is_empty() {
-            PartitionState::Mounted
-        } else if has_filesystem || !fs_type.is_empty() {
-            PartitionState::Unmounted
-        } else {
-            PartitionState::Unformatted
-        };
-
-        let block = BlockDevice {
-            device,
-            uuid: prop_str(block_props, "IdUUID"),
-            label: prop_str(block_props, "IdLabel"),
-            fs_type,
-            size: prop_u64(block_props, "Size"),
-            offset,
-            mount_points,
-            drive_id: drive_id.clone(),
-            state,
-            part_uuid,
-            part_label,
-        };
-
-        if let Some(&idx) = drive_map.get(&drive_id) {
-            drives[idx].partitions.push(block);
-        }
-    }
-
-    for drive in &mut drives {
-        drive.partitions.sort_by_key(|p| p.offset);
-    }
-    drives.sort_by(|a, b| a.model.cmp(&b.model));
-
-    Ok(drives)
 }

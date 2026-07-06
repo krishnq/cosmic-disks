@@ -12,9 +12,7 @@ use cosmic::widget::{self, about::About, menu};
 
 use crate::config::{Config, CONFIG_VERSION};
 use crate::fl;
-use crate::message::{
-    ActiveDialog, ContextPage, LoadState, Message, MountFlag, SelectionState,
-};
+use crate::message::{ActiveDialog, ContextPage, LoadState, Message, MountFlag, SelectionState};
 use crate::ui::disk_card::disk_card;
 
 const REPOSITORY: &str = "https://github.com/krishnqs/cosmic-disks";
@@ -31,10 +29,12 @@ pub struct AppModel {
     pub config: Config,
     pub config_handler: Option<cosmic::cosmic_config::Config>,
     pub operation_error: Option<String>,
+    /// Incremented on every new error so a stale auto-dismiss timer is ignored.
+    pub error_epoch: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MenuAction {
+pub(crate) enum MenuAction {
     About,
     Refresh,
 }
@@ -99,6 +99,7 @@ impl cosmic::Application for AppModel {
             config,
             config_handler,
             operation_error: None,
+            error_epoch: 0,
         };
 
         let command = cosmic::task::future(async {
@@ -177,8 +178,7 @@ impl cosmic::Application for AppModel {
                             .width(Length::Fill),
                     )
                     .push(
-                        widget::button::standard(fl!("browse"))
-                            .on_press(Message::BrowseMountPath),
+                        widget::button::standard(fl!("browse")).on_press(Message::BrowseMountPath),
                     )
                     .spacing(spacing.space_s)
                     .align_y(cosmic::iced::Alignment::Center);
@@ -237,20 +237,24 @@ impl cosmic::Application for AppModel {
                 )
             }
 
-            ActiveDialog::Unmount { device, mount_points } => {
+            ActiveDialog::Unmount {
+                device,
+                mount_points,
+            } => {
+                let device = device.as_str();
                 let body = if mount_points.is_empty() {
-                    fl!("unmount-confirm-body-no-path", device = device.clone())
+                    fl!("unmount-confirm-body-no-path", device = device)
                 } else {
                     fl!(
                         "unmount-confirm-body",
-                        device = device.clone(),
+                        device = device,
                         path = mount_points.join(", ")
                     )
                 };
 
                 Some(
                     widget::dialog()
-                        .title(fl!("unmount-confirm-title", device = device.clone()))
+                        .title(fl!("unmount-confirm-title", device = device))
                         .control(widget::text::body(body))
                         .primary_action(
                             widget::button::destructive(fl!("unmount"))
@@ -297,7 +301,7 @@ impl AppModel {
         let spacing = cosmic::theme::spacing();
         widget::column()
             .push(widget::text::title3(fl!("error")))
-            .push(widget::text::body(error.clone()))
+            .push(widget::text::body(error.as_str()))
             .push(widget::button::standard(fl!("refresh")).on_press(Message::RefreshDisks))
             .spacing(spacing.space_m)
             .align_x(Alignment::Center)
@@ -324,11 +328,8 @@ impl AppModel {
         if let Some(ref err) = self.operation_error {
             outer = outer.push(
                 widget::row()
-                    .push(widget::text::body(err.clone()).width(Length::Fill))
-                    .push(
-                        widget::button::standard(fl!("dismiss"))
-                            .on_press(Message::DismissError),
-                    )
+                    .push(widget::text::body(err.as_str()).width(Length::Fill))
+                    .push(widget::button::standard(fl!("dismiss")).on_press(Message::DismissError))
                     .spacing(spacing.space_s)
                     .align_y(Alignment::Center)
                     .apply(widget::container)

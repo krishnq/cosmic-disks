@@ -2,8 +2,8 @@
 
 use crate::actions::disks::BlockDevice;
 use crate::message::{FsType, Message};
-use cosmic::iced::{Color, Point, Rectangle, Size as IcedSize};
 use cosmic::iced::mouse;
+use cosmic::iced::{Color, Point, Rectangle, Size as IcedSize};
 use cosmic::widget::canvas;
 
 /// Minimum rendered and clickable width (px) per partition segment.
@@ -112,7 +112,7 @@ impl<'a> canvas::Program<Message, cosmic::Theme> for DiskBar<'a> {
                     Hover::Unallocated => {
                         return Some(
                             canvas::Action::publish(Message::SelectUnallocated(
-                                self.drive_id.to_string(),
+                                self.drive_id.to_owned(),
                             ))
                             .and_capture(),
                         );
@@ -163,7 +163,11 @@ impl<'a> canvas::Program<Message, cosmic::Theme> for DiskBar<'a> {
         } else {
             Color::from_rgba(0.4, 0.4, 0.4, 0.3)
         };
-        frame.fill_rectangle(Point::new(0.0, 0.0), IcedSize::new(bounds.width, height), bg);
+        frame.fill_rectangle(
+            Point::new(0.0, 0.0),
+            IcedSize::new(bounds.width, height),
+            bg,
+        );
 
         let rects = self.screen_rects(bounds.width);
         for (i, (partition, &(x, w))) in self.partitions.iter().zip(rects.iter()).enumerate() {
@@ -196,8 +200,7 @@ impl<'a> canvas::Program<Message, cosmic::Theme> for DiskBar<'a> {
             frame.fill_rectangle(Point::new(x, 0.0), IcedSize::new(w, height), color);
 
             if is_selected {
-                let path =
-                    canvas::Path::rectangle(Point::new(x, 0.0), IcedSize::new(w, height));
+                let path = canvas::Path::rectangle(Point::new(x, 0.0), IcedSize::new(w, height));
                 frame.stroke(
                     &path,
                     canvas::Stroke::default()
@@ -217,17 +220,17 @@ fn fs_color(fs: &str) -> Color {
     // own entries here so they don't fall through to the grey default.
     if let Ok(t) = fs.parse::<FsType>() {
         return match t {
-            FsType::Ext4  => Color::from_rgb(0.22, 0.53, 0.92),
+            FsType::Ext4 => Color::from_rgb(0.22, 0.53, 0.92),
             FsType::Btrfs => Color::from_rgb(0.18, 0.75, 0.50),
-            FsType::Xfs   => Color::from_rgb(0.82, 0.44, 0.10),
-            FsType::Vfat  => Color::from_rgb(0.92, 0.76, 0.10),
+            FsType::Xfs => Color::from_rgb(0.82, 0.44, 0.10),
+            FsType::Vfat => Color::from_rgb(0.92, 0.76, 0.10),
             FsType::Exfat | FsType::Ntfs => Color::from_rgb(0.00, 0.44, 0.76),
         };
     }
     match fs {
-        "swap"    => Color::from_rgb(0.86, 0.24, 0.24),
-        "zfs"     => Color::from_rgb(0.55, 0.24, 0.86),
+        "swap" => Color::from_rgb(0.86, 0.24, 0.24),
+        "zfs" => Color::from_rgb(0.55, 0.24, 0.86),
         "iso9660" => Color::from_rgb(0.70, 0.70, 0.30),
-        _         => Color::from_rgb(0.50, 0.50, 0.55),
+        _ => Color::from_rgb(0.50, 0.50, 0.55),
     }
 }

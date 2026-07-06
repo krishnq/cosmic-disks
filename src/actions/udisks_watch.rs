@@ -16,7 +16,7 @@ use crate::message::Message;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-pub fn subscription() -> cosmic::iced::Subscription<Message> {
+pub(crate) fn subscription() -> cosmic::iced::Subscription<Message> {
     cosmic::iced::Subscription::run(watch_impl)
 }
 
@@ -44,18 +44,17 @@ async fn run_watch(
     let mut stream = MessageStream::for_match_rule(rule, &conn, Some(32)).await?;
 
     loop {
-        // Wait for the first signal.
+        // An idle await here is fine — no signals just means nothing changed.
+        // Stream end (None) means the connection dropped; return so the outer
+        // loop reconnects.
         if stream.next().await.is_none() {
             break;
         }
 
         // Debounce: drain any further signals arriving within 500 ms.
-        loop {
-            match tokio::time::timeout(Duration::from_millis(500), stream.next()).await {
-                Ok(Some(_)) => continue,
-                _ => break,
-            }
-        }
+        while let Ok(Some(_)) =
+            tokio::time::timeout(Duration::from_millis(500), stream.next()).await
+        {}
 
         if tx.send(Message::RefreshDisks).await.is_err() {
             break;

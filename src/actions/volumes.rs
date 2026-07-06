@@ -17,10 +17,25 @@
 
 use crate::util::{ay_to_string, prop_str};
 use std::collections::HashMap;
+use zbus::proxy::MethodFlags;
 use zbus::zvariant::{Array, OwnedObjectPath, OwnedValue, Signature, Value};
 use zbus::Connection;
 
-pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum VolumeError {
+    #[error("device {device_path} not found in udisks2")]
+    DeviceNotFound { device_path: String },
+    #[error("mount path must be absolute (got \"{path}\"); use / or ~")]
+    PathNotAbsolute { path: String },
+    #[error("mount path must not contain \"..\" (got \"{path}\")")]
+    PathContainsParentDir { path: String },
+    #[error("a mount path is required for a direct mount")]
+    MountPathRequired,
+    #[error(transparent)]
+    Dbus(#[from] zbus::Error),
+}
+
+pub(crate) type Result<T> = std::result::Result<T, VolumeError>;
 
 // ---------------------------------------------------------------------------
 // Low-level helpers
@@ -56,7 +71,9 @@ async fn resolve_device(conn: &Connection, device_path: &str) -> Result<(String,
         }
     }
 
-    Err(format!("Device {device_path} not found in udisks2").into())
+    Err(VolumeError::DeviceNotFound {
+        device_path: device_path.to_string(),
+    })
 }
 
 /// Convert a Rust `&str` to a udisks2-style `ay` D-Bus value.
@@ -72,21 +89,18 @@ fn str_to_ay(s: &str) -> Value<'static> {
     let sig = Signature::from_bytes(b"y").expect("\"y\" is a valid D-Bus signature");
     let mut arr = Array::new(&sig);
     for b in bytes {
-        // Array::append only fails if the value's type mismatches the signature;
-        // Value::U8 always matches "y", so unwrap is safe here.
-        arr.append(Value::U8(b)).unwrap();
+        arr.append(Value::U8(b))
+            .expect("invariant: Value::U8 always matches signature \"y\"");
     }
     Value::Array(arr)
 }
 
-/// Expand a leading `~` to `$HOME` and verify the result is an absolute path.
-///
-/// Returns `Ok("")` when `raw` is empty — callers must treat that as "no path
-/// given" and return an error before proceeding.
+/// Expand a leading `~` to `$HOME` and verify the result is a non-empty
+/// absolute path without `..` components.
 fn resolve_path(raw: &str) -> Result<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Ok(String::new());
+        return Err(VolumeError::MountPathRequired);
     }
 
     let expanded = if trimmed == "~" {
@@ -99,10 +113,7 @@ fn resolve_path(raw: &str) -> Result<String> {
     };
 
     if !expanded.starts_with('/') {
-        return Err(format!(
-            "Mount path must be absolute (got \"{expanded}\"). Use / or ~."
-        )
-        .into());
+        return Err(VolumeError::PathNotAbsolute { path: expanded });
     }
 
     // Reject `..` to prevent traversal sequences ending up in fstab entries.
@@ -110,10 +121,7 @@ fn resolve_path(raw: &str) -> Result<String> {
         .components()
         .any(|c| c == std::path::Component::ParentDir)
     {
-        return Err(format!(
-            "Mount path must not contain \"..\" (got \"{expanded}\")."
-        )
-        .into());
+        return Err(VolumeError::PathContainsParentDir { path: expanded });
     }
 
     Ok(expanded)
@@ -150,8 +158,6 @@ async fn add_fstab_entry(
     dir: &str,
     options: &str,
 ) -> Result<()> {
-    use zbus::proxy::MethodFlags;
-
     let opts = if options.trim().is_empty() {
         "defaults"
     } else {
@@ -165,10 +171,10 @@ async fn add_fstab_entry(
     // String fields use `ay` (NUL-terminated byte arrays); numeric fields use `i`.
     let mut dict: HashMap<&str, Value<'_>> = HashMap::new();
     dict.insert("fsname", str_to_ay(fsname));
-    dict.insert("dir",    str_to_ay(dir));
-    dict.insert("type",   str_to_ay("auto")); // let the kernel auto-detect
-    dict.insert("opts",   str_to_ay(opts));
-    dict.insert("freq",   Value::I32(0));
+    dict.insert("dir", str_to_ay(dir));
+    dict.insert("type", str_to_ay("auto")); // let the kernel auto-detect
+    dict.insert("opts", str_to_ay(opts));
+    dict.insert("freq", Value::I32(0));
     dict.insert("passno", Value::I32(0));
 
     let call_opts: HashMap<&str, Value<'_>> = HashMap::new();
@@ -205,9 +211,7 @@ async fn add_fstab_entry(
 /// authorization transparently.
 ///
 /// `options` — comma-separated flags (e.g. `"ro,noatime"`), or `""` for defaults.
-pub async fn mount_default(device: &str, options: &str) -> Result<String> {
-    use zbus::proxy::MethodFlags;
-
+pub(crate) async fn mount_default(device: &str, options: &str) -> Result<String> {
     let conn = Connection::system().await?;
     let (obj_path, _) = resolve_device(&conn, device).await?;
 
@@ -225,11 +229,7 @@ pub async fn mount_default(device: &str, options: &str) -> Result<String> {
     .await?;
 
     let reply: Option<String> = proxy
-        .call_with_flags(
-            "Mount",
-            MethodFlags::AllowInteractiveAuth.into(),
-            &opts,
-        )
+        .call_with_flags("Mount", MethodFlags::AllowInteractiveAuth.into(), &opts)
         .await?;
 
     let mount_point = reply.unwrap_or_default();
@@ -256,18 +256,13 @@ pub async fn mount_default(device: &str, options: &str) -> Result<String> {
 /// - Uses `UUID=<id>` as the fstab spec when the device has a UUID (stable
 ///   across renames/reboots); falls back to the raw device path otherwise.
 /// - `options` — comma-separated flags (e.g. `"ro,noatime"`), or `""` for `"defaults"`.
-pub async fn mount_at_path(
+pub(crate) async fn mount_at_path(
     device: &str,
     mount_path: &str,
     options: &str,
     persistent: bool,
 ) -> Result<String> {
-    use zbus::proxy::MethodFlags;
-
     let resolved = resolve_path(mount_path)?;
-    if resolved.is_empty() {
-        return Err("A mount path is required for a direct mount.".into());
-    }
 
     // Best-effort mkdir for user-owned paths (~/…).
     // For system paths the user must create the directory first, or the mount
@@ -315,7 +310,10 @@ pub async fn mount_at_path(
         )
         .await?;
 
-    Ok(format!("Mounted {device} at {}", mount_point.unwrap_or_default()))
+    Ok(format!(
+        "Mounted {device} at {}",
+        mount_point.unwrap_or_default()
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -323,9 +321,7 @@ pub async fn mount_at_path(
 // ---------------------------------------------------------------------------
 
 /// Unmount a block device via udisks2 D-Bus.
-pub async fn unmount(device: &str) -> Result<String> {
-    use zbus::proxy::MethodFlags;
-
+pub(crate) async fn unmount(device: &str) -> Result<String> {
     let conn = Connection::system().await?;
     let (path, _) = resolve_device(&conn, device).await?;
 
@@ -340,11 +336,7 @@ pub async fn unmount(device: &str) -> Result<String> {
     .await?;
 
     proxy
-        .call_with_flags::<_, _, ()>(
-            "Unmount",
-            MethodFlags::AllowInteractiveAuth.into(),
-            &opts,
-        )
+        .call_with_flags::<_, _, ()>("Unmount", MethodFlags::AllowInteractiveAuth.into(), &opts)
         .await?;
 
     Ok(format!("Unmounted {device}"))
@@ -355,14 +347,12 @@ pub async fn unmount(device: &str) -> Result<String> {
 /// `block_device_path` — udisks2 object path of the whole-disk block device
 ///                       (e.g. `/org/freedesktop/UDisks2/block_devices/sda`).
 /// `size_bytes`        — partition size; 0 means "use all available space".
-pub async fn create_partition(
+pub(crate) async fn create_partition(
     block_device_path: &str,
     size_bytes: u64,
     fs_type: &str,
     label: &str,
 ) -> Result<String> {
-    use zbus::proxy::MethodFlags;
-
     let conn = Connection::system().await?;
 
     let mut format_opts: HashMap<&str, Value<'_>> = HashMap::new();
@@ -393,9 +383,7 @@ pub async fn create_partition(
 }
 
 /// Format a block device via udisks2 D-Bus.
-pub async fn format(device_path: &str, fs_type: &str, label: &str) -> Result<String> {
-    use zbus::proxy::MethodFlags;
-
+pub(crate) async fn format(device_path: &str, fs_type: &str, label: &str) -> Result<String> {
     let conn = Connection::system().await?;
     let (path, _) = resolve_device(&conn, device_path).await?;
 

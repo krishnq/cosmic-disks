@@ -4,8 +4,8 @@ use i18n_embed::{
     fluent::{fluent_language_loader, FluentLanguageLoader},
     DefaultLocalizer, LanguageLoader, Localizer,
 };
-use std::sync::LazyLock;
 use rust_embed::RustEmbed;
+use std::sync::LazyLock;
 
 #[derive(RustEmbed)]
 #[folder = "i18n/"]
@@ -15,16 +15,17 @@ pub static LANGUAGE_LOADER: LazyLock<FluentLanguageLoader> = LazyLock::new(|| {
     let loader: FluentLanguageLoader = fluent_language_loader!();
     loader
         .load_fallback_language(&Localizations)
-        .expect("Error while loading fallback language");
+        .expect("bundled en fallback .ftl is missing — this is a packaging error");
     loader
 });
 
-pub fn init(requested_languages: &[i18n_embed::unic_langid::LanguageIdentifier]) {
+pub(crate) fn init(requested_languages: &[i18n_embed::unic_langid::LanguageIdentifier]) {
     let localizer = localizer();
+    // best-effort; fallback language is already loaded above
     let _ = localizer.select(requested_languages);
 }
 
-pub fn localizer() -> Box<dyn Localizer> {
+pub(crate) fn localizer() -> Box<dyn Localizer> {
     Box::from(DefaultLocalizer::new(&*LANGUAGE_LOADER, &Localizations))
 }
 

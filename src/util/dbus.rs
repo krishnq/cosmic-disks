@@ -31,7 +31,13 @@ pub(crate) fn ay_to_string(v: &OwnedValue) -> String {
     };
     let bytes: Vec<u8> = arr
         .iter()
-        .filter_map(|item| if let Value::U8(b) = item { Some(*b) } else { None })
+        .filter_map(|item| {
+            if let Value::U8(b) = item {
+                Some(*b)
+            } else {
+                None
+            }
+        })
         .collect();
     String::from_utf8_lossy(&bytes)
         .trim_end_matches('\0')
@@ -58,12 +64,22 @@ pub(crate) fn prop_mount_points(props: &HashMap<String, OwnedValue>) -> Vec<Stri
             if let Value::Array(inner) = item {
                 let bytes: Vec<u8> = inner
                     .iter()
-                    .filter_map(|b| if let Value::U8(byte) = b { Some(*byte) } else { None })
+                    .filter_map(|b| {
+                        if let Value::U8(byte) = b {
+                            Some(*byte)
+                        } else {
+                            None
+                        }
+                    })
                     .collect();
                 let s = String::from_utf8_lossy(&bytes)
                     .trim_end_matches('\0')
                     .to_string();
-                if s.is_empty() { None } else { Some(s) }
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s)
+                }
             } else {
                 None
             }

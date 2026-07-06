@@ -807,7 +807,6 @@ dependencies = [
  "anstream 0.6.21",
  "anstyle",
  "clap_lex",
- "strsim",
 ]
 
 [[package]]
@@ -1075,6 +1074,7 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
  "tokio",
  "udisks2",
  "url",
@@ -4841,7 +4841,6 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
- "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",

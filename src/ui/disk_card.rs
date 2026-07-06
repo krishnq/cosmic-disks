@@ -34,8 +34,15 @@ pub fn disk_card<'a>(
     let mut card = widget::column().push(header).spacing(spacing.space_xxs);
 
     // Resolve selection fields relevant to this specific drive.
-    let (selected_partition, selected_unallocated, fstab_entry, operation_error, format_panel,
-        create_partition_panel, operation_in_progress) = match selection {
+    let (
+        selected_partition,
+        selected_unallocated,
+        fstab_entry,
+        operation_error,
+        format_panel,
+        create_partition_panel,
+        operation_in_progress,
+    ) = match selection {
         SelectionState::Partition(p) if p.partition.drive_id == drive.id => (
             Some(&p.partition),
             false,
@@ -70,10 +77,12 @@ pub fn disk_card<'a>(
         .width(Length::Fill)
         .height(cosmic::iced::Pixels(40.0));
 
-        card = card.push(
-            widget::container(bar)
-                .padding([0, spacing.space_m, spacing.space_s, spacing.space_m]),
-        );
+        card = card.push(widget::container(bar).padding([
+            0,
+            spacing.space_m,
+            spacing.space_s,
+            spacing.space_m,
+        ]));
     }
 
     if let Some(p) = selected_partition {
@@ -165,9 +174,12 @@ fn partition_details<'a>(
             ));
     }
 
-    let details = details
-        .spacing(spacing.space_s)
-        .padding([spacing.space_s, spacing.space_m, 0, spacing.space_m]);
+    let details = details.spacing(spacing.space_s).padding([
+        spacing.space_s,
+        spacing.space_m,
+        0,
+        spacing.space_m,
+    ]);
 
     let actions_area = if let Some(label) = op_label {
         busy_row(label, spacing)
@@ -196,12 +208,9 @@ fn action_buttons<'a>(
     let row = widget::row().spacing(spacing.space_s);
 
     match p.state {
-        PartitionState::Mounted => row.push(
-            widget::button::destructive(fl!("unmount")).on_press(Message::OpenUnmountDialog(
-                p.device.clone(),
-                p.mount_points.clone(),
-            )),
-        ),
+        PartitionState::Mounted => row.push(widget::button::destructive(fl!("unmount")).on_press(
+            Message::OpenUnmountDialog(p.device.clone(), p.mount_points.clone()),
+        )),
         PartitionState::Unmounted => {
             let row = if let Some(fstab) = fstab_entry {
                 row.push(
@@ -239,7 +248,10 @@ fn action_buttons<'a>(
 }
 
 /// Shows an animated icon + operation label while a D-Bus call is in-flight.
-fn busy_row<'a>(label: String, spacing: &cosmic::cosmic_theme::Spacing) -> cosmic::Element<'a, Message> {
+fn busy_row<'a>(
+    label: String,
+    spacing: &cosmic::cosmic_theme::Spacing,
+) -> cosmic::Element<'a, Message> {
     widget::row()
         .push(icon::from_name("process-working-symbolic").size(16))
         .push(widget::text::body(label))
@@ -272,7 +284,11 @@ fn unallocated_details<'a>(
     spacing: &cosmic::cosmic_theme::Spacing,
 ) -> cosmic::Element<'a, Message> {
     let info = widget::column()
-        .push(detail_row(fl!("field-type"), fl!("field-unallocated"), spacing))
+        .push(detail_row(
+            fl!("field-type"),
+            fl!("field-unallocated"),
+            spacing,
+        ))
         .push(detail_row(
             fl!("field-size"),
             ByteSize::b(free_bytes).to_string(),
@@ -288,14 +304,12 @@ fn unallocated_details<'a>(
     } else {
         widget::container(
             widget::row()
-                .push(
-                    widget::button::suggested(fl!("create-partition")).on_press(
-                        Message::OpenCreatePartitionPanel {
-                            drive_id: drive_id.to_string(),
-                            max_bytes: free_bytes,
-                        },
-                    ),
-                )
+                .push(widget::button::suggested(fl!("create-partition")).on_press(
+                    Message::OpenCreatePartitionPanel {
+                        drive_id: drive_id.to_string(),
+                        max_bytes: free_bytes,
+                    },
+                ))
                 .spacing(spacing.space_s),
         )
         .padding([spacing.space_s, spacing.space_m])
@@ -328,10 +342,7 @@ fn create_partition_widget<'a>(
         .width(Length::Fill);
 
     let buttons = widget::row()
-        .push(
-            widget::button::standard(fl!("cancel"))
-                .on_press(Message::CloseCreatePartitionPanel),
-        )
+        .push(widget::button::standard(fl!("cancel")).on_press(Message::CloseCreatePartitionPanel))
         .push(
             widget::button::suggested(fl!("create-partition-confirm"))
                 .on_press(Message::ConfirmCreatePartition),
@@ -365,7 +376,7 @@ fn format_panel_widget<'a>(
     fp: &'a FormatPanel,
     spacing: &cosmic::cosmic_theme::Spacing,
 ) -> cosmic::Element<'a, Message> {
-    let warning = widget::text::body(fl!("format-warning", device = fp.device.clone()));
+    let warning = widget::text::body(fl!("format-warning", device = fp.device.as_str()));
 
     let mut fs_row = widget::row().spacing(spacing.space_xs);
     for &fs in FsType::ALL.iter() {
@@ -382,13 +393,8 @@ fn format_panel_widget<'a>(
         .width(Length::Fill);
 
     let buttons = widget::row()
-        .push(
-            widget::button::standard(fl!("cancel")).on_press(Message::CloseFormatPanel),
-        )
-        .push(
-            widget::button::destructive(fl!("format-confirm"))
-                .on_press(Message::ConfirmFormat),
-        )
+        .push(widget::button::standard(fl!("cancel")).on_press(Message::CloseFormatPanel))
+        .push(widget::button::destructive(fl!("format-confirm")).on_press(Message::ConfirmFormat))
         .spacing(spacing.space_s);
 
     widget::column()

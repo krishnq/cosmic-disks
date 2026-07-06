@@ -23,7 +23,10 @@ pub enum ActiveDialog {
     #[default]
     None,
     Mount(MountLocationDialog),
-    Unmount { device: String, mount_points: Vec<String> },
+    Unmount {
+        device: String,
+        mount_points: Vec<String>,
+    },
 }
 
 pub struct PartitionContext {
@@ -45,13 +48,13 @@ pub struct UnallocatedContext {
 pub enum SelectionState {
     #[default]
     None,
-    Partition(PartitionContext),
+    Partition(Box<PartitionContext>),
     Unallocated(UnallocatedContext),
 }
 
 impl SelectionState {
     /// Returns `true` when the selected partition already has an `/etc/fstab` entry loaded.
-    pub fn has_fstab_entry(&self) -> bool {
+    pub(crate) fn has_fstab_entry(&self) -> bool {
         if let SelectionState::Partition(ctx) = self {
             ctx.fstab_entry.is_some()
         } else {
@@ -71,7 +74,7 @@ pub enum MountFlag {
 }
 
 impl MountFlag {
-    pub const ALL: [MountFlag; 6] = [
+    pub(crate) const ALL: [MountFlag; 6] = [
         MountFlag::ReadOnly,
         MountFlag::NoExec,
         MountFlag::NoSuid,
@@ -80,25 +83,25 @@ impl MountFlag {
         MountFlag::Sync,
     ];
 
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
-            MountFlag::ReadOnly  => "ro",
-            MountFlag::NoExec    => "noexec",
-            MountFlag::NoSuid    => "nosuid",
-            MountFlag::NoAtime   => "noatime",
+            MountFlag::ReadOnly => "ro",
+            MountFlag::NoExec => "noexec",
+            MountFlag::NoSuid => "nosuid",
+            MountFlag::NoAtime => "noatime",
             MountFlag::NoDiratime => "nodiratime",
-            MountFlag::Sync      => "sync",
+            MountFlag::Sync => "sync",
         }
     }
 
-    pub fn label(self) -> String {
+    pub(crate) fn label(self) -> String {
         match self {
-            MountFlag::ReadOnly   => crate::fl!("mount-flag-ro"),
-            MountFlag::NoExec     => crate::fl!("mount-flag-noexec"),
-            MountFlag::NoSuid     => crate::fl!("mount-flag-nosuid"),
-            MountFlag::NoAtime    => crate::fl!("mount-flag-noatime"),
+            MountFlag::ReadOnly => crate::fl!("mount-flag-ro"),
+            MountFlag::NoExec => crate::fl!("mount-flag-noexec"),
+            MountFlag::NoSuid => crate::fl!("mount-flag-nosuid"),
+            MountFlag::NoAtime => crate::fl!("mount-flag-noatime"),
             MountFlag::NoDiratime => crate::fl!("mount-flag-nodiratime"),
-            MountFlag::Sync       => crate::fl!("mount-flag-sync"),
+            MountFlag::Sync => crate::fl!("mount-flag-sync"),
         }
     }
 }
@@ -121,7 +124,7 @@ pub enum FsType {
 }
 
 impl FsType {
-    pub const ALL: [FsType; 6] = [
+    pub(crate) const ALL: [FsType; 6] = [
         FsType::Ext4,
         FsType::Btrfs,
         FsType::Xfs,
@@ -130,14 +133,14 @@ impl FsType {
         FsType::Ntfs,
     ];
 
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
-            FsType::Ext4  => "ext4",
+            FsType::Ext4 => "ext4",
             FsType::Btrfs => "btrfs",
-            FsType::Xfs   => "xfs",
-            FsType::Vfat  => "vfat",
+            FsType::Xfs => "xfs",
+            FsType::Vfat => "vfat",
             FsType::Exfat => "exfat",
-            FsType::Ntfs  => "ntfs",
+            FsType::Ntfs => "ntfs",
         }
     }
 }
@@ -151,12 +154,12 @@ impl std::str::FromStr for FsType {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "ext4" | "ext3" | "ext2" => Ok(FsType::Ext4),
-            "btrfs"                   => Ok(FsType::Btrfs),
-            "xfs"                     => Ok(FsType::Xfs),
+            "btrfs" => Ok(FsType::Btrfs),
+            "xfs" => Ok(FsType::Xfs),
             "vfat" | "fat16" | "fat32" => Ok(FsType::Vfat),
-            "exfat"                   => Ok(FsType::Exfat),
-            "ntfs"                    => Ok(FsType::Ntfs),
-            _                         => Err(()),
+            "exfat" => Ok(FsType::Exfat),
+            "ntfs" => Ok(FsType::Ntfs),
+            _ => Err(()),
         }
     }
 }
@@ -193,7 +196,7 @@ impl MountLocationDialog {
     /// Suppresses the write when the partition is already in fstab — guards
     /// against a race where `already_in_fstab` was set before the async lookup
     /// completed, or against a future UI path that bypasses the disabled checkbox.
-    pub fn effective_add_to_fstab(&self) -> bool {
+    pub(crate) fn effective_add_to_fstab(&self) -> bool {
         self.add_to_fstab && !self.already_in_fstab
     }
 }
@@ -218,6 +221,8 @@ pub struct CreatePartitionPanel {
     pub label: String,
 }
 
+// Intentionally exhaustive: Elm-style architecture requires every arm to be
+// handled in AppModel::handle. Do NOT add #[non_exhaustive] here.
 #[derive(Debug, Clone)]
 pub enum Message {
     LaunchUrl(String),
@@ -230,7 +235,10 @@ pub enum Message {
     FstabLoaded(Option<FstabEntry>),
     /// Open the "mount at location" dialog for a device.
     /// `prefill_path` pre-populates the path field (e.g. from an existing mount point).
-    OpenMountDialog { device: String, prefill_path: Option<String> },
+    OpenMountDialog {
+        device: String,
+        prefill_path: Option<String>,
+    },
     /// User edited the path text field in the mount dialog.
     MountDialogPathChanged(String),
     /// User toggled the advanced-options section in the mount dialog.
@@ -264,7 +272,10 @@ pub enum Message {
     /// User confirmed — execute the format.
     ConfirmFormat,
     /// Open the create-partition panel for the unallocated region of a drive.
-    OpenCreatePartitionPanel { drive_id: String, max_bytes: u64 },
+    OpenCreatePartitionPanel {
+        drive_id: String,
+        max_bytes: u64,
+    },
     /// User edited the size field in the create-partition panel.
     CreatePartitionSizeChanged(String),
     /// User picked a different filesystem in the create-partition panel.
@@ -279,6 +290,8 @@ pub enum Message {
     OperationFailed(String),
     /// User dismissed the inline error.
     DismissError,
+    /// Auto-dismiss timer fired; only clears the error if the epoch still matches.
+    AutoDismissError(u64),
     /// Config changed externally (e.g. another process wrote to cosmic-config).
     ConfigUpdate(crate::config::Config),
 }
@@ -329,13 +342,13 @@ mod tests {
 
     #[test]
     fn partition_without_fstab_returns_false() {
-        let state = SelectionState::Partition(partition_ctx(None));
+        let state = SelectionState::Partition(Box::new(partition_ctx(None)));
         assert!(!state.has_fstab_entry());
     }
 
     #[test]
     fn partition_with_fstab_returns_true() {
-        let state = SelectionState::Partition(partition_ctx(Some(dummy_fstab())));
+        let state = SelectionState::Partition(Box::new(partition_ctx(Some(dummy_fstab()))));
         assert!(state.has_fstab_entry());
     }
 

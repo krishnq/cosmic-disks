@@ -14,9 +14,10 @@ use crate::message::{
 };
 
 impl AppModel {
-    pub fn handle(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
+    pub(crate) fn handle(&mut self, message: Message) -> Task<cosmic::Action<Message>> {
         match message {
             Message::LaunchUrl(url) => {
+                // best-effort; failure is non-fatal (browser may not be installed)
                 let _ = open::that_detached(&url);
             }
 
@@ -30,23 +31,24 @@ impl AppModel {
             }
 
             Message::SelectPartition(partition) => {
+                // Clone only the fields the async closure needs; move `partition` itself.
                 let uuid = partition.uuid.clone();
                 let label = partition.label.clone();
                 let device = partition.device.clone();
                 let part_uuid = partition.part_uuid.clone();
                 let part_label = partition.part_label.clone();
-                self.selection_state = SelectionState::Partition(PartitionContext {
+
+                self.selection_state = SelectionState::Partition(Box::new(PartitionContext {
                     partition,
                     fstab_entry: None,
                     format_panel: None,
                     operation_in_progress: None,
                     operation_error: None,
-                });
+                }));
 
                 return cosmic::task::future(async move {
                     let entry =
-                        disks::lookup_fstab(&uuid, &label, &device, &part_uuid, &part_label)
-                            .await;
+                        disks::lookup_fstab(&uuid, &label, &device, &part_uuid, &part_label).await;
                     cosmic::Action::App(Message::FstabLoaded(entry))
                 });
             }
@@ -66,7 +68,10 @@ impl AppModel {
                 });
             }
 
-            Message::OpenMountDialog { device, prefill_path } => {
+            Message::OpenMountDialog {
+                device,
+                prefill_path,
+            } => {
                 let already_in_fstab = self.selection_state.has_fstab_entry();
                 self.active_dialog = ActiveDialog::Mount(MountLocationDialog {
                     device,
@@ -117,9 +122,7 @@ impl AppModel {
             }
 
             Message::BrowsePathPicked(path) => {
-                if let (ActiveDialog::Mount(ref mut d), Some(p)) =
-                    (&mut self.active_dialog, path)
-                {
+                if let (ActiveDialog::Mount(ref mut d), Some(p)) = (&mut self.active_dialog, path) {
                     d.path = p;
                 }
             }
@@ -128,7 +131,6 @@ impl AppModel {
                 if let ActiveDialog::Mount(d) =
                     std::mem::replace(&mut self.active_dialog, ActiveDialog::None)
                 {
-                    let device = d.device.clone();
                     let mount_path = d.path.trim().to_string();
                     let add_to_fstab = d.effective_add_to_fstab();
                     let options = MountFlag::ALL
@@ -137,10 +139,10 @@ impl AppModel {
                         .map(|f| f.as_str())
                         .collect::<Vec<_>>()
                         .join(",");
+                    let device = d.device;
 
                     if let SelectionState::Partition(ref mut ctx) = self.selection_state {
-                        ctx.operation_in_progress =
-                            Some(OperationKind::Mounting(device.clone()));
+                        ctx.operation_in_progress = Some(OperationKind::Mounting(device.clone()));
                     }
 
                     return cosmic::task::future(async move {
@@ -157,9 +159,7 @@ impl AppModel {
                         };
                         match result {
                             Ok(_) => cosmic::Action::App(Message::RefreshDisks),
-                            Err(e) => {
-                                cosmic::Action::App(Message::OperationFailed(e.to_string()))
-                            }
+                            Err(e) => cosmic::Action::App(Message::OperationFailed(e.to_string())),
                         }
                     });
                 }
@@ -170,7 +170,10 @@ impl AppModel {
             }
 
             Message::OpenUnmountDialog(device, mount_points) => {
-                self.active_dialog = ActiveDialog::Unmount { device, mount_points };
+                self.active_dialog = ActiveDialog::Unmount {
+                    device,
+                    mount_points,
+                };
                 if let SelectionState::Partition(ref mut ctx) = self.selection_state {
                     ctx.operation_error = None;
                 }
@@ -182,16 +185,13 @@ impl AppModel {
                 {
                     if let SelectionState::Partition(ref mut ctx) = self.selection_state {
                         ctx.operation_error = None;
-                        ctx.operation_in_progress =
-                            Some(OperationKind::Unmounting(device.clone()));
+                        ctx.operation_in_progress = Some(OperationKind::Unmounting(device.clone()));
                     }
 
                     return cosmic::task::future(async move {
                         match crate::actions::volumes::unmount(&device).await {
                             Ok(_) => cosmic::Action::App(Message::RefreshDisks),
-                            Err(e) => {
-                                cosmic::Action::App(Message::OperationFailed(e.to_string()))
-                            }
+                            Err(e) => cosmic::Action::App(Message::OperationFailed(e.to_string())),
                         }
                     });
                 }
@@ -240,17 +240,19 @@ impl AppModel {
                     _ => None,
                 };
                 if let Some(fp) = fp {
-                    let device = fp.device.clone();
-                    let fs_type = fp.fs_type.as_str().to_string();
-                    let label = fp.label.clone();
+                    let FormatPanel {
+                        device,
+                        fs_type,
+                        label,
+                    } = fp;
+                    let fs_type_str = fs_type.as_str().to_string();
 
                     if let SelectionState::Partition(ref mut ctx) = self.selection_state {
                         ctx.operation_error = None;
-                        ctx.operation_in_progress =
-                            Some(OperationKind::Formatting(device.clone()));
+                        ctx.operation_in_progress = Some(OperationKind::Formatting(device.clone()));
                     }
 
-                    self.config.default_fs_type = fp.fs_type;
+                    self.config.default_fs_type = fs_type;
                     if let Some(ref handler) = self.config_handler {
                         if let Err(e) = self.config.write_entry(handler) {
                             log::warn!("failed to save config: {e}");
@@ -258,17 +260,18 @@ impl AppModel {
                     }
 
                     return cosmic::task::future(async move {
-                        match crate::actions::volumes::format(&device, &fs_type, &label).await {
+                        match crate::actions::volumes::format(&device, &fs_type_str, &label).await {
                             Ok(_) => cosmic::Action::App(Message::RefreshDisks),
-                            Err(e) => {
-                                cosmic::Action::App(Message::OperationFailed(e.to_string()))
-                            }
+                            Err(e) => cosmic::Action::App(Message::OperationFailed(e.to_string())),
                         }
                     });
                 }
             }
 
-            Message::OpenCreatePartitionPanel { drive_id, max_bytes } => {
+            Message::OpenCreatePartitionPanel {
+                drive_id,
+                max_bytes,
+            } => {
                 let block_device = match &self.load_state {
                     LoadState::Ready(drives) => drives
                         .iter()
@@ -331,9 +334,7 @@ impl AppModel {
                     let size_bytes = match parsed {
                         None => {
                             let bad_input = panel.size_str.clone();
-                            if let SelectionState::Unallocated(ref mut ctx) =
-                                self.selection_state
-                            {
+                            if let SelectionState::Unallocated(ref mut ctx) = self.selection_state {
                                 ctx.operation_error =
                                     Some(fl!("error-invalid-size", input = bad_input));
                                 ctx.create_panel = Some(panel);
@@ -344,18 +345,22 @@ impl AppModel {
                         Some(b) => b,
                     };
 
-                    let fs_type = panel.fs_type.as_str().to_string();
-                    let label = panel.label.clone();
-                    let block_device = panel.block_device.clone();
+                    let CreatePartitionPanel {
+                        drive_id,
+                        fs_type,
+                        label,
+                        block_device,
+                        ..
+                    } = panel;
+                    let fs_type_str = fs_type.as_str().to_string();
 
                     if let SelectionState::Unallocated(ref mut ctx) = self.selection_state {
                         ctx.operation_error = None;
-                        ctx.operation_in_progress = Some(OperationKind::CreatingPartition {
-                            drive_id: panel.drive_id.clone(),
-                        });
+                        ctx.operation_in_progress =
+                            Some(OperationKind::CreatingPartition { drive_id });
                     }
 
-                    self.config.default_fs_type = panel.fs_type;
+                    self.config.default_fs_type = fs_type;
                     if let Some(ref handler) = self.config_handler {
                         if let Err(e) = self.config.write_entry(handler) {
                             log::warn!("failed to save config: {e}");
@@ -366,22 +371,21 @@ impl AppModel {
                         match crate::actions::volumes::create_partition(
                             &block_device,
                             size_bytes,
-                            &fs_type,
+                            &fs_type_str,
                             &label,
                         )
                         .await
                         {
                             Ok(_) => cosmic::Action::App(Message::RefreshDisks),
-                            Err(e) => {
-                                cosmic::Action::App(Message::OperationFailed(e.to_string()))
-                            }
+                            Err(e) => cosmic::Action::App(Message::OperationFailed(e.to_string())),
                         }
                     });
                 }
             }
 
             Message::OperationFailed(e) => {
-                self.operation_error = Some(e.clone());
+                // The error is shown in exactly one place: inside the selected
+                // card when a selection exists, otherwise in the top-level banner.
                 match &mut self.selection_state {
                     SelectionState::Partition(ctx) => {
                         ctx.operation_in_progress = None;
@@ -391,21 +395,26 @@ impl AppModel {
                         ctx.operation_in_progress = None;
                         ctx.operation_error = Some(e);
                     }
-                    SelectionState::None => {}
+                    SelectionState::None => self.operation_error = Some(e),
                 }
-                return cosmic::task::future(async {
+                // Epoch-tag the auto-dismiss so a stale timer from an earlier
+                // error cannot dismiss a newer one.
+                self.error_epoch += 1;
+                let epoch = self.error_epoch;
+                return cosmic::task::future(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(8)).await;
-                    cosmic::Action::App(Message::DismissError)
+                    cosmic::Action::App(Message::AutoDismissError(epoch))
                 });
             }
 
-            Message::DismissError => {
-                self.operation_error = None;
-                match &mut self.selection_state {
-                    SelectionState::Partition(ctx) => ctx.operation_error = None,
-                    SelectionState::Unallocated(ctx) => ctx.operation_error = None,
-                    SelectionState::None => {}
+            Message::AutoDismissError(epoch) => {
+                if epoch == self.error_epoch {
+                    self.clear_errors();
                 }
+            }
+
+            Message::DismissError => {
+                self.clear_errors();
             }
 
             Message::ConfigUpdate(config) => {
@@ -413,10 +422,8 @@ impl AppModel {
             }
 
             Message::RefreshDisks => {
-                self.load_state = LoadState::Scanning;
-                self.selection_state = SelectionState::None;
-                self.active_dialog = ActiveDialog::None;
-
+                // Keep the current view, selection, and any open dialog while the
+                // scan runs; DisksScanned reconciles them with the fresh results.
                 return cosmic::task::future(async {
                     cosmic::Action::App(match disks::scan_drives().await {
                         Ok(drives) => Message::DisksScanned(Ok(drives)),
@@ -426,13 +433,101 @@ impl AppModel {
             }
 
             Message::DisksScanned(result) => {
-                self.load_state = match result {
-                    Ok(drives) => LoadState::Ready(drives),
-                    Err(e) => LoadState::Error(e),
+                let drives = match result {
+                    Ok(drives) => drives,
+                    Err(e) => {
+                        self.load_state = LoadState::Error(e);
+                        return Task::none();
+                    }
                 };
+
+                let followup = self.recompute_selection(&drives);
+                self.recompute_dialog(&drives);
+                self.load_state = LoadState::Ready(drives);
+                return followup;
             }
         }
 
         Task::none()
+    }
+
+    /// Re-point the current selection at the freshly scanned data, or clear it
+    /// if the selected partition / drive no longer exists.  Returns a follow-up
+    /// task to re-check `/etc/fstab` for a still-selected partition (a mount may
+    /// have just written an entry).
+    fn recompute_selection(&mut self, drives: &[disks::Drive]) -> Task<cosmic::Action<Message>> {
+        let mut clear = false;
+        let mut followup = Task::none();
+
+        match &mut self.selection_state {
+            SelectionState::Partition(ctx) => {
+                let fresh = drives
+                    .iter()
+                    .flat_map(|d| &d.partitions)
+                    .find(|p| p.device == ctx.partition.device);
+                match fresh {
+                    Some(p) => {
+                        ctx.partition = p.clone();
+                        ctx.operation_in_progress = None;
+
+                        let uuid = p.uuid.clone();
+                        let label = p.label.clone();
+                        let device = p.device.clone();
+                        let part_uuid = p.part_uuid.clone();
+                        let part_label = p.part_label.clone();
+                        followup = cosmic::task::future(async move {
+                            let entry = disks::lookup_fstab(
+                                &uuid,
+                                &label,
+                                &device,
+                                &part_uuid,
+                                &part_label,
+                            )
+                            .await;
+                            cosmic::Action::App(Message::FstabLoaded(entry))
+                        });
+                    }
+                    None => clear = true,
+                }
+            }
+            SelectionState::Unallocated(ctx) => {
+                if drives.iter().any(|d| d.id == ctx.drive_id) {
+                    ctx.operation_in_progress = None;
+                } else {
+                    clear = true;
+                }
+            }
+            SelectionState::None => {}
+        }
+
+        if clear {
+            self.selection_state = SelectionState::None;
+        }
+        followup
+    }
+
+    /// Close an open dialog if the device it refers to disappeared from the scan.
+    fn recompute_dialog(&mut self, drives: &[disks::Drive]) {
+        let device = match &self.active_dialog {
+            ActiveDialog::Mount(d) => d.device.as_str(),
+            ActiveDialog::Unmount { device, .. } => device.as_str(),
+            ActiveDialog::None => return,
+        };
+        let still_exists = drives
+            .iter()
+            .flat_map(|d| &d.partitions)
+            .any(|p| p.device == device);
+        if !still_exists {
+            self.active_dialog = ActiveDialog::None;
+        }
+    }
+
+    fn clear_errors(&mut self) {
+        self.operation_error = None;
+        match &mut self.selection_state {
+            SelectionState::Partition(ctx) => ctx.operation_error = None,
+            SelectionState::Unallocated(ctx) => ctx.operation_error = None,
+            SelectionState::None => {}
+        }
     }
 }
